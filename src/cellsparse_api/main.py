@@ -38,13 +38,14 @@ def run(
     eval=False,
     simplify_tol=None,
 ):
-    img = normalize(decode_image(b64img), 0, 100, axis=(0, 1))
+    imgs = [normalize(decode_image(b), 0, 100, axis=(0, 1)) for b in b64img.split(';')]
     if train:
-        lbl = decode_image(b64lbl).astype(int) - 1
-        runner._train([img], [lbl], [img], [lbl], modelname)
+        lbls = [decode_image(b).astype(int) - 1 for b in b64lbl.split(';')]
+        lbls, imgs_train = [list(i) for i in zip(*[(lbl, img) for lbl, img in zip(lbls, imgs) if lbl.max() > -1])]
+        runner._train(imgs_train, lbls, imgs_train, lbls, modelname)
     if eval:
-        pred = runner._eval([img], modelname)[0]
-        return postprocess(pred, simplify_tol)
+        preds = runner._eval(imgs, modelname)
+        return postprocess(preds, simplify_tol)
     return []
 
 
@@ -53,6 +54,7 @@ def mask_to_geometry(
     downsample: float = 1.0,
     offset: Tuple[int, int] = (0, 0),
     simplify_tol=None,
+    **extras
 ):
     # modified from https://github.com/MouseLand/cellpose_web/blob/main/utils.py
     mask = np.pad(mask, 1)  # handle edges properly by zero-padding
@@ -77,25 +79,27 @@ def mask_to_geometry(
             simplify_tol, preserve_topology=False
         )
         contour_asList = list(poly_shapely_simple.exterior.coords)
-    return geojson_polygon([contour_asList])
+    return geojson_polygon([contour_asList], **extras)
 
 
-def postprocess(pred, simplify_tol=None):
+def postprocess(preds, simplify_tol=None):
     index_number = 0
     features = []
-    for value in np.unique(pred):
-        if value == 0:
-            continue
-        features.append(
-            Feature(
+    for t, pred in enumerate(preds):
+        for value in np.unique(pred):
+            if value == 0:
+                continue
+            features.append(
+                Feature(
                 geometry=mask_to_geometry(
                     (pred == value).astype(np.uint8),
                     simplify_tol=simplify_tol,
+                    plane={"c": 0, "z": 0, "t": t}
                 ),
-                properties={"object_idx": index_number, "label": "object"},
+                properties={"object_idx": index_number, "label": "object"}
+                )
             )
-        )
-        index_number += 1
+            index_number += 1
     return features
 
 
